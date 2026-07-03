@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════
-   ClearGlass Browser — Preload Script
+   GlassyWeb Browser — Preload Script v2.0
    ═══════════════════════════════════════ */
 
 'use strict';
@@ -8,14 +8,18 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Window controls
-  close:      () => ipcRenderer.send('window-minimize-close'),
-  minimize:   () => ipcRenderer.send('window-minimize'),
-  maximize:   () => ipcRenderer.send('window-maximize'),
-  isMaximized:() => ipcRenderer.invoke('is-maximized'),
+  minimize:    () => ipcRenderer.send('window-minimize'),
+  maximize:    () => ipcRenderer.send('window-maximize'),
+  isMaximized: () => ipcRenderer.invoke('is-maximized'),
+  windowClose: () => ipcRenderer.send('window-close'),
+  setWindowTitle: (t) => ipcRenderer.send('set-window-title', t),
+
+  // Window state events
+  onWindowState: (cb) => ipcRenderer.on('window-state', (_, s) => cb(s)),
 
   // Open/show files
-  openFile:  (p)  => ipcRenderer.send('open-file', p),
-  showFile:  (p)  => ipcRenderer.send('show-file', p),
+  openFile: (p) => ipcRenderer.send('open-file', p),
+  showFile: (p) => ipcRenderer.send('show-file', p),
 
   // History
   historyGet:    ()      => ipcRenderer.invoke('history-get'),
@@ -28,6 +32,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   bookmarkAdd:    (bm) => ipcRenderer.send('bookmark-add', bm),
   bookmarkRemove: (url)=> ipcRenderer.send('bookmark-remove', url),
 
+  // Speed Dials
+  speedDialsGet: ()      => ipcRenderer.invoke('speeddials-get'),
+  speedDialsSet: (dials) => ipcRenderer.send('speeddials-set', dials),
+
   // Settings
   settingsGet: ()  => ipcRenderer.invoke('settings-get'),
   settingsSet: (s) => ipcRenderer.send('settings-set', s),
@@ -39,23 +47,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setUserAgent: (ua) => ipcRenderer.send('set-user-agent', ua),
   getUserAgent: ()   => ipcRenderer.invoke('get-user-agent'),
 
-  // DevTools (split-screen toggle)
+  // DevTools
   toggleDevToolsSplit: (wcId) => ipcRenderer.send('toggle-devtools-split', wcId),
   openDevTools:        (wcId) => ipcRenderer.send('open-devtools', wcId),
 
   // Extensions
-  extensionsList:     ()  => ipcRenderer.invoke('extensions-list'),
-  extensionsOpenDir:  ()  => ipcRenderer.invoke('extensions-open-dir'),
-  extensionsOpenStore:()  => ipcRenderer.send('extensions-open-store'),
+  extensionsList:        ()  => ipcRenderer.invoke('extensions-list'),
+  extensionsOpenDir:     ()  => ipcRenderer.invoke('extensions-open-dir'),
+  extensionsOpenStore:   ()  => ipcRenderer.send('extensions-open-store'),
+  installExtensionById:  (id)=> ipcRenderer.invoke('install-extension-from-id', id),
+
+  // Background image
+  bgSaveFile: (name, data) => ipcRenderer.invoke('bg-save-file', { name, data }),
+  bgGetFile:  (filePath)   => ipcRenderer.invoke('bg-get-file', filePath),
 
   // Downloads
   onDownloadStarted: (cb) => ipcRenderer.on('download-started', (_, d) => cb(d)),
   onDownloadUpdated: (cb) => ipcRenderer.on('download-updated', (_, d) => cb(d)),
   onDownloadDone:    (cb) => ipcRenderer.on('download-done',    (_, d) => cb(d)),
-
+  
   // Open URL from main
   onOpenUrl: (cb) => ipcRenderer.on('open-url', (_, url) => cb(url)),
 
-  // Window close (actual close)
-  windowClose: () => ipcRenderer.send('window-close'),
+  // Webview right-click forwarded from main
+  onWebviewContextMenu: (cb) => ipcRenderer.on('webview-context-menu', (_, params) => cb(params)),
 });
