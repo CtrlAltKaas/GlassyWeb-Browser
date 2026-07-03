@@ -1,6 +1,6 @@
 {
   "name": "GlassyWeb-Browser",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Your personal Glassy Browser",
   "main": "main.js",
   "scripts": {
@@ -21,13 +21,23 @@
       "icon": "icon.ico"
     },
     "nsis": {
-      "oneClick": true,
+      "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": false,
+      "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "GlassyWeb"
+      "shortcutName": "GlassyWeb",
+      "include": "build/installer.nsh"
     },
+    "protocols": [
+      { "name": "HTTP",  "schemes": ["http"] },
+      { "name": "HTTPS", "schemes": ["https"] }
+    ],
+    "fileAssociations": [
+      { "ext": "html", "name": "HTML Document", "description": "HTML Document", "role": "Viewer" },
+      { "ext": "htm",  "name": "HTML Document", "description": "HTML Document", "role": "Viewer" },
+      { "ext": "pdf",  "name": "PDF Document",  "description": "PDF Document",  "role": "Viewer" }
+    ],
     "directories": {
       "output": "dist"
     }
