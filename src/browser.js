@@ -362,13 +362,47 @@ function createTab(url = null) {
 
   tabs.push({ id, tabEl, webview, ntpEl, errorEl, title: 'New Tab', favicon: '', url: url || '' });
   setActiveTab(id);
+  resizeTabs();
   return id;
 }
+
+// ══════════════════════════════════════
+// DYNAMIC TAB WIDTH
+// Shrinks tabs to fit the available space instead
+// of letting them overflow the tab bar.
+// ══════════════════════════════════════
+const TAB_MIN_WIDTH  = 44;   // icon + close button only, no title
+const TAB_MAX_WIDTH  = 200;
+const TAB_GAP        = 4;
+const TAB_TITLE_CUTOFF = 110; // below this width, hide the title text
+
+let resizeTabsRaf = null;
+function resizeTabs() {
+  if (resizeTabsRaf) cancelAnimationFrame(resizeTabsRaf);
+  resizeTabsRaf = requestAnimationFrame(() => {
+    const count = tabs.length;
+    if (!count) return;
+
+    const availWidth = tabsContainer.clientWidth;
+    const totalGap = TAB_GAP * (count - 1);
+    let width = Math.floor((availWidth - totalGap) / count);
+    width = Math.max(TAB_MIN_WIDTH, Math.min(TAB_MAX_WIDTH, width));
+
+    tabs.forEach(t => {
+      t.tabEl.style.width = width + 'px';
+      t.tabEl.style.flex  = `0 0 ${width}px`;
+      t.tabEl.classList.toggle('tab-compact', width < TAB_TITLE_CUTOFF);
+    });
+  });
+}
+
+window.addEventListener('resize', resizeTabs);
 
 function createWebview(url, tabId) {
   const wv = document.createElement('webview');
   wv.setAttribute('src', sanitizeUrl(url));
-  wv.setAttribute('webpreferences', 'contextIsolation=yes,sandbox=no');
+  // plugins=yes turns on Chromium's built-in PDF viewer, so .pdf files/links render inline
+  wv.setAttribute('webpreferences', 'contextIsolation=yes,sandbox=no,plugins=yes');
   wv.setAttribute('partition', 'persist:clearglass_session');
   wv.dataset.tabId = tabId;
   contentArea.appendChild(wv);
@@ -425,6 +459,7 @@ function closeTab(id) {
     } else if (activeTabId === id) {
       setActiveTab(tabs[Math.min(idx, tabs.length - 1)].id);
     }
+    resizeTabs();
   }, 280);
 }
 
@@ -808,6 +843,15 @@ window.electronAPI?.onWindowState(state => {
   btn.title = state === 'maximized' ? 'Restore' : 'Maximize';
 });
 
+// ── Window controls style (macOS dots vs Windows rectangles) ──
+function applyTitleBarStyle(style) {
+  const shell = document.getElementById('browser-shell');
+  if (!shell) return;
+  shell.classList.toggle('titlebar-windows', style === 'windows');
+  shell.classList.toggle('titlebar-mac', style !== 'windows');
+  resizeTabs();
+}
+
 // ══════════════════════════════════════
 // PANELS
 // ══════════════════════════════════════
@@ -1078,7 +1122,65 @@ async function loadSettingsUI() {
 
   // Update preview
   updateBgPreview(bgType, s.backgroundUrl, s.backgroundPath);
+
+  // Window controls style
+  const tbStyle = s.titleBarStyle || 'mac';
+  document.querySelectorAll('#panel-settings [data-titlebar]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.titlebar === tbStyle);
+  });
+
+  // Default browser status
+  refreshDefaultBrowserStatus();
+
+  // About / version
+  const version = await window.electronAPI?.getAppVersion();
+  if (version) document.getElementById('about-version').textContent = `GlassyWeb v${version}`;
 }
+
+async function refreshDefaultBrowserStatus() {
+  const statusEl = document.getElementById('default-browser-status');
+  if (!statusEl) return;
+  const isDefault = await window.electronAPI?.getDefaultBrowser();
+  statusEl.textContent = isDefault ? '✓ GlassyWeb is your default browser' : 'Not your default browser';
+}
+
+// Window controls style buttons (in Settings)
+document.querySelectorAll('#panel-settings [data-titlebar]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('#panel-settings [data-titlebar]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const style = btn.dataset.titlebar;
+    settings.titleBarStyle = style;
+    window.electronAPI?.settingsSet({ titleBarStyle: style });
+    applyTitleBarStyle(style);
+    showToast(style === 'windows' ? 'Windows-style controls enabled' : 'macOS-style controls enabled');
+  });
+});
+
+// Set as default browser
+document.getElementById('btn-set-default-browser')?.addEventListener('click', async () => {
+  const result = await window.electronAPI?.setDefaultBrowser();
+  if (result?.requiresManualConfirm) {
+    showToast('Finish setup in Windows Settings, then come back');
+  } else if (result?.success) {
+    showToast('GlassyWeb set as default browser');
+  } else {
+    showToast('Could not set as default: ' + (result?.error || 'unknown error'));
+  }
+  setTimeout(refreshDefaultBrowserStatus, 1200);
+});
+
+// Open a local file (also available via Ctrl+O)
+document.getElementById('btn-open-file')?.addEventListener('click', async () => {
+  const urls = await window.electronAPI?.openFileDialog();
+  (urls || []).forEach(u => createTab(u));
+});
+
+// View changelog on demand
+document.getElementById('btn-show-whatsnew')?.addEventListener('click', () => {
+  closePanel();
+  showWhatsNew(true);
+});
 
 document.getElementById('set-homepage').addEventListener('change', function() {
   document.getElementById('custom-homepage-row').style.display = this.value === 'custom' ? '' : 'none';
@@ -1384,6 +1486,10 @@ document.addEventListener('keydown', e => {
   if (mod && e.key === 'h') { e.preventDefault(); openPanel('history'); }
   if (mod && e.key === 'b') { e.preventDefault(); openPanel('bookmarks'); }
   if (mod && e.key === ',') { e.preventDefault(); openPanel('settings'); }
+  if (mod && e.key === 'o') {
+    e.preventDefault();
+    window.electronAPI?.openFileDialog().then(urls => (urls || []).forEach(u => createTab(u)));
+  }
   if (e.key === 'Escape')   { closePanel(); suggestionsBox.classList.remove('visible'); }
 
   if (e.altKey && e.key === 'ArrowLeft')  { e.preventDefault(); btnBack.click(); }
@@ -1623,6 +1729,117 @@ function svgSelectAll() { return svgIcon('<rect x="3" y="3" width="18" height="1
 function svgSearch()    { return svgIcon('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>'); }
 
 // ══════════════════════════════════════
+// FIRST-RUN ONBOARDING
+// ══════════════════════════════════════
+const onboardingSteps = Array.from(document.querySelectorAll('.onboarding-step'));
+const onboardingProgress = document.getElementById('onboarding-progress');
+let obStepIndex = 0;
+let obChoices = { searchEngine: 'https://www.google.com/search?q=', titleBarStyle: 'mac' };
+
+function buildOnboardingProgress() {
+  onboardingProgress.innerHTML = onboardingSteps.map((_, i) => `<span data-i="${i}"></span>`).join('');
+}
+
+function showOnboardingStep(idx) {
+  obStepIndex = idx;
+  onboardingSteps.forEach(el => { el.style.display = (+el.dataset.step === idx) ? '' : 'none'; });
+  onboardingProgress.querySelectorAll('span').forEach(s => s.classList.toggle('active', +s.dataset.i === idx));
+
+  const backBtn = document.getElementById('ob-back-btn');
+  const nextBtn = document.getElementById('ob-next-btn');
+  backBtn.style.visibility = idx === 0 ? 'hidden' : 'visible';
+  nextBtn.textContent = idx === onboardingSteps.length - 1 ? 'Finish' : 'Next';
+}
+
+document.getElementById('ob-search-options')?.querySelectorAll('.onboarding-option').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('ob-search-options').querySelectorAll('.onboarding-option').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    obChoices.searchEngine = btn.dataset.value;
+  });
+});
+
+document.getElementById('ob-titlebar-options')?.querySelectorAll('.onboarding-option').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.getElementById('ob-titlebar-options').querySelectorAll('.onboarding-option').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    obChoices.titleBarStyle = btn.dataset.value;
+    applyTitleBarStyle(btn.dataset.value);
+  });
+});
+
+document.getElementById('ob-set-default-btn')?.addEventListener('click', async () => {
+  const statusEl = document.getElementById('ob-default-status');
+  const result = await window.electronAPI?.setDefaultBrowser();
+  if (result?.requiresManualConfirm) statusEl.textContent = 'Finish setup in the Windows Settings window that just opened.';
+  else if (result?.success) statusEl.textContent = '✓ GlassyWeb is now your default browser';
+  else statusEl.textContent = 'Could not set as default browser.';
+});
+
+document.getElementById('ob-back-btn')?.addEventListener('click', () => {
+  if (obStepIndex > 0) showOnboardingStep(obStepIndex - 1);
+});
+
+document.getElementById('ob-next-btn')?.addEventListener('click', () => {
+  if (obStepIndex < onboardingSteps.length - 1) {
+    showOnboardingStep(obStepIndex + 1);
+  } else {
+    finishOnboarding();
+  }
+});
+
+async function finishOnboarding() {
+  settings.searchEngine  = obChoices.searchEngine;
+  settings.titleBarStyle = obChoices.titleBarStyle;
+  window.electronAPI?.settingsSet({ searchEngine: obChoices.searchEngine, titleBarStyle: obChoices.titleBarStyle });
+  window.electronAPI?.onboardingComplete();
+
+  // First run: don't show "What's New" for the version they just installed with
+  const version = await window.electronAPI?.getAppVersion();
+  if (version) window.electronAPI?.setLastSeenVersion(version);
+
+  document.getElementById('onboarding-overlay').classList.remove('visible');
+}
+
+async function maybeShowOnboarding() {
+  buildOnboardingProgress();
+  const onboarded = await window.electronAPI?.onboardingGet();
+  if (onboarded) return false;
+  showOnboardingStep(0);
+  document.getElementById('onboarding-overlay').classList.add('visible');
+  return true;
+}
+
+// ══════════════════════════════════════
+// WHAT'S NEW
+// ══════════════════════════════════════
+async function showWhatsNew(manualOpen = false) {
+  const version = await window.electronAPI?.getAppVersion();
+  document.getElementById('whatsnew-version').textContent = version ? `v${version}` : '';
+  document.getElementById('whatsnew-overlay').classList.add('visible');
+  if (!manualOpen && version) window.electronAPI?.setLastSeenVersion(version);
+}
+
+function closeWhatsNew() {
+  document.getElementById('whatsnew-overlay').classList.remove('visible');
+}
+document.getElementById('whatsnew-close')?.addEventListener('click', closeWhatsNew);
+document.getElementById('whatsnew-got-it')?.addEventListener('click', closeWhatsNew);
+
+async function maybeShowWhatsNew() {
+  const [current, lastSeen] = await Promise.all([
+    window.electronAPI?.getAppVersion(),
+    window.electronAPI?.getLastSeenVersion(),
+  ]);
+  if (current && lastSeen && current !== lastSeen) {
+    showWhatsNew(false);
+  } else if (current && !lastSeen) {
+    // No record yet (e.g. upgraded from a build before this feature existed) — just record it, no popup.
+    window.electronAPI?.setLastSeenVersion(current);
+  }
+}
+
+// ══════════════════════════════════════
 // INIT
 // ══════════════════════════════════════
 async function init() {
@@ -1638,6 +1855,9 @@ async function init() {
   // Apply background
   await applyBackground(settings.backgroundType || 'default', settings.backgroundUrl, settings.backgroundPath);
 
+  // Apply window controls style
+  applyTitleBarStyle(settings.titleBarStyle || 'mac');
+
   // Set user agent if saved
   if (settings.userAgent) {
     window.electronAPI?.setUserAgent(settings.userAgent);
@@ -1645,6 +1865,15 @@ async function init() {
 
   // Open new tab page (homepage)
   createTab();
+
+  // Tell the main process we can now receive queued "open this file" requests
+  window.electronAPI?.rendererReady();
+
+  // First-run onboarding takes priority; only check for a changelog once it's done (or skipped)
+  const showedOnboarding = await maybeShowOnboarding();
+  if (!showedOnboarding) {
+    maybeShowWhatsNew();
+  }
 
   console.log('[GlassyWeb v2.0] Initialized ✓');
 }
