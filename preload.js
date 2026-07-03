@@ -71,4 +71,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Webview right-click forwarded from main
   onWebviewContextMenu: (cb) => ipcRenderer.on('webview-context-menu', (_, params) => cb(params)),
+
+  // Default browser
+  getDefaultBrowser: () => ipcRenderer.invoke('default-browser-get'),
+  setDefaultBrowser: () => ipcRenderer.invoke('default-browser-set'),
+
+  // App version / What's New
+  getAppVersion:       () => ipcRenderer.invoke('get-app-version'),
+  getLastSeenVersion:  () => ipcRenderer.invoke('get-last-seen-version'),
+  setLastSeenVersion:  (v) => ipcRenderer.send('set-last-seen-version', v),
+
+  // First-run onboarding
+  onboardingGet:      () => ipcRenderer.invoke('onboarding-get'),
+  onboardingComplete: () => ipcRenderer.send('onboarding-complete'),
+
+  // Open local file(s) via native dialog (Ctrl+O)
+  openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
+
+  // Tell main process the renderer is ready to receive queued "open file" URLs
+  rendererReady: () => ipcRenderer.send('renderer-ready'),
 });
