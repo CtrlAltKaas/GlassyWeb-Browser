@@ -1,4 +1,4 @@
-# Glassy Browser v1.3.0
+# Glassy Browser v1.2.1
 
 A glassmorphism Electron browser.
 
