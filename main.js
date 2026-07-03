@@ -1,6 +1,8 @@
 /* ═══════════════════════════════════════
-   ClearGlass Browser — Main Process
+   GlassyWeb Browser — Main Process v2.0
    ═══════════════════════════════════════ */
+
+'use strict';
 
 const { app, BrowserWindow, ipcMain, session, shell } = require('electron');
 const path = require('path');
@@ -13,6 +15,7 @@ const DATA_DIR  = path.join(app.getPath('userData'), 'clearglass');
 const HIST_FILE = path.join(DATA_DIR, 'history.json');
 const BM_FILE   = path.join(DATA_DIR, 'bookmarks.json');
 const SETS_FILE = path.join(DATA_DIR, 'settings.json');
+const DIALS_FILE= path.join(DATA_DIR, 'speeddials.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -21,7 +24,7 @@ function readJSON(file, fallback) {
   catch { return fallback; }
 }
 function writeJSON(file, data) {
-  try { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); } catch {}
+  try { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); } catch (e) { console.error('writeJSON error', e); }
 }
 
 // ── Create Window ──────────────────────
@@ -29,25 +32,34 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    icon: path.join(__dirname, 'icon.ico'),
     minWidth: 900,
     minHeight: 600,
     frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
+    transparent: false,
+    backgroundColor: '#0a0e1a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
       contextIsolation: true,
       webviewTag: true,
       sandbox: false,
-      partition: 'persist:glassyweb_session',
+      partition: 'persist:clearglass_session',
     },
     titleBarStyle: 'hidden',
-    icon: path.join(__dirname, 'src', 'images', 'logo.png'),
+    // Windows-specific: proper shadow & rounded corners
+    roundedCorners: true,
+    icon: path.join(__dirname, 'icon.ico'),
   });
 
-  mainWindow.loadFile('src/index.html');
+  // On Windows, set proper title for taskbar
+  mainWindow.setTitle('GlassyWeb');
+
+  mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+
+  // Send window title updates to renderer
+  mainWindow.webContents.on('page-title-updated', (e, title) => {
+    e.preventDefault();
+  });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     mainWindow.webContents.send('open-url', url);
@@ -60,8 +72,13 @@ function createWindow() {
     }
   });
 
+  // Track maximize/unmaximize for title bar button state
+  mainWindow.on('maximize',   () => mainWindow.webContents.send('window-state', 'maximized'));
+  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window-state', 'normal'));
+  mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('window-state', 'fullscreen'));
+  mainWindow.on('leave-full-screen', () => mainWindow.webContents.send('window-state', 'normal'));
+
   // ── Download handling ──────────────────
-  // Listen on BOTH the default session and the persist session
   const handleDownload = (event, item) => {
     const savePath = path.join(app.getPath('downloads'), item.getFilename());
     item.setSavePath(savePath);
@@ -97,7 +114,6 @@ function createWindow() {
 
   session.defaultSession.on('will-download', handleDownload);
   session.fromPartition('persist:clearglass_session').on('will-download', handleDownload);
-  // Incognito session downloads
   session.fromPartition('incognito').on('will-download', handleDownload);
 }
 
@@ -120,15 +136,13 @@ async function loadExtensions() {
 
 // ── App Startup ────────────────────────
 app.whenReady().then(async () => {
-  // Bypass CSP
+  // Bypass CSP for all sessions
   const bypassCSP = (sess) => {
     sess.webRequest.onHeadersReceived((details, callback) => {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Content-Security-Policy': [''],
-        },
-      });
+      const headers = { ...details.responseHeaders };
+      delete headers['content-security-policy'];
+      delete headers['Content-Security-Policy'];
+      callback({ responseHeaders: { ...headers, 'Content-Security-Policy': [''] } });
     });
   };
 
@@ -136,20 +150,49 @@ app.whenReady().then(async () => {
   bypassCSP(session.fromPartition('persist:clearglass_session'));
   bypassCSP(session.fromPartition('incognito'));
 
-  // Spoof Chrome UA for Chrome Web Store so the site loads properly
+  // Spoof Chrome UA for Chrome Web Store
   const cwsFilter = { urls: ['https://chromewebstore.google.com/*', 'https://clients2.google.com/*'] };
   const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+  
   session.fromPartition('persist:clearglass_session').webRequest.onBeforeSendHeaders(cwsFilter, (details, cb) => {
     cb({ requestHeaders: { ...details.requestHeaders, 'User-Agent': chromeUA } });
   });
+  
+  // Also apply to default session for CWS
+  session.defaultSession.webRequest.onBeforeSendHeaders(cwsFilter, (details, cb) => {
+    cb({ requestHeaders: { ...details.requestHeaders, 'User-Agent': chromeUA } });
+  });
 
-  // Fix new-window: any webview that tries to open a new OS window gets
-  // redirected to a new in-app tab instead.
+  // Handle new window events from webviews — open as new tab
   app.on('web-contents-created', (_, contents) => {
     if (contents.getType() === 'webview') {
       contents.setWindowOpenHandler(({ url }) => {
         mainWindow?.webContents.send('open-url', url);
         return { action: 'deny' };
+      });
+
+      // Forward right-click from inside webview to renderer's context menu handler
+      contents.on('context-menu', (event, params) => {
+        mainWindow?.webContents.send('webview-context-menu', {
+          x: params.x,
+          y: params.y,
+          linkURL: params.linkURL,
+          srcURL: params.srcURL,
+          selectionText: params.selectionText,
+          isEditable: params.isEditable,
+          pageURL: params.pageURL,
+        });
+      });
+
+      // F12 inside webview — undocked so it attaches to the main window
+      contents.on('before-input-event', (event, input) => {
+        if (input.key === 'F12' && input.type === 'keyDown') {
+          if (contents.isDevToolsOpened()) {
+            contents.closeDevTools();
+          } else {
+            contents.openDevTools({ mode: 'undocked' });
+          }
+        }
       });
     }
   });
@@ -179,6 +222,11 @@ ipcMain.on('window-maximize', () => {
 ipcMain.on('window-close', () => mainWindow?.close());
 ipcMain.handle('is-maximized', () => mainWindow?.isMaximized() ?? false);
 
+// Set window title from renderer
+ipcMain.on('set-window-title', (_, title) => {
+  mainWindow?.setTitle(title || 'GlassyWeb');
+});
+
 // Open / show downloaded files
 ipcMain.on('open-file',  (_, p) => shell.openPath(p));
 ipcMain.on('show-file',  (_, p) => shell.showItemInFolder(p));
@@ -187,7 +235,6 @@ ipcMain.on('show-file',  (_, p) => shell.showItemInFolder(p));
 ipcMain.handle('history-get', () => readJSON(HIST_FILE, []));
 ipcMain.on('history-add', (_, entry) => {
   const hist = readJSON(HIST_FILE, []);
-  // Avoid duplicate consecutive entries
   if (hist.length && hist[0].url === entry.url) return;
   hist.unshift({ ...entry, timestamp: Date.now() });
   writeJSON(HIST_FILE, hist.slice(0, 2000));
@@ -210,15 +257,50 @@ ipcMain.on('bookmark-remove', (_, url) => {
   writeJSON(BM_FILE, readJSON(BM_FILE, []).filter(b => b.url !== url));
 });
 
+// ── Speed Dials ────────────────────────
+ipcMain.handle('speeddials-get', () => readJSON(DIALS_FILE, null));
+ipcMain.on('speeddials-set', (_, dials) => writeJSON(DIALS_FILE, dials));
+
 // ── Settings ───────────────────────────
 ipcMain.handle('settings-get', () => readJSON(SETS_FILE, {
-  homepage: 'https://google.com',
+  homepage: 'newtab',
   userAgent: '',
   searchEngine: 'https://www.google.com/search?q=',
+  backgroundType: 'default',
+  backgroundUrl: '',
+  backgroundPath: '',
 }));
 ipcMain.on('settings-set', (_, s) => {
   const cur = readJSON(SETS_FILE, {});
   writeJSON(SETS_FILE, { ...cur, ...s });
+});
+
+// ── Background image file handling ─────
+const BG_DIR = path.join(DATA_DIR, 'backgrounds');
+if (!fs.existsSync(BG_DIR)) fs.mkdirSync(BG_DIR, { recursive: true });
+
+ipcMain.handle('bg-save-file', async (_, { name, data }) => {
+  try {
+    const buffer = Buffer.from(data, 'base64');
+    const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const destPath = path.join(BG_DIR, safeName);
+    fs.writeFileSync(destPath, buffer);
+    return { success: true, path: destPath };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('bg-get-file', async (_, filePath) => {
+  try {
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif' };
+    const mime = mimeMap[ext] || 'image/jpeg';
+    return { success: true, data: data.toString('base64'), mime };
+  } catch(e) {
+    return { success: false };
+  }
 });
 
 // ── Clear cache / cookies ──────────────
@@ -238,23 +320,23 @@ ipcMain.handle('get-user-agent', () =>
   session.fromPartition('persist:clearglass_session').getUserAgent()
 );
 
-// ── DevTools (split-screen toggle) ─────
+// ── DevTools ───────────────────────────
 ipcMain.on('toggle-devtools-split', (_, wcId) => {
   const { webContents } = require('electron');
   const wc = webContents.fromId(wcId);
-  if (!wc) return;
+  if (!wc) { console.warn('[devtools] no webContents for id', wcId); return; }
   if (wc.isDevToolsOpened()) {
     wc.closeDevTools();
   } else {
-    wc.openDevTools({ mode: 'right' });
+    // 'undocked' docks the devtools window to the main BrowserWindow as a side panel
+    wc.openDevTools({ mode: 'undocked' });
   }
 });
 
-// Keep old handler as alias for F12 in the shell
 ipcMain.on('open-devtools', (_, wcId) => {
   const { webContents } = require('electron');
   const wc = webContents.fromId(wcId);
-  if (wc) wc.openDevTools({ mode: 'right' });
+  if (wc) wc.openDevTools({ mode: 'undocked' });
 });
 
 // ── Extensions IPC ─────────────────────
@@ -275,4 +357,36 @@ ipcMain.handle('extensions-open-dir', () => {
 
 ipcMain.on('extensions-open-store', () => {
   mainWindow?.webContents.send('open-url', 'https://chromewebstore.google.com');
+});
+
+// Luister naar ALLE kliks in ALLE web-inhoud (inclusief webviews/sites)
+app.on('web-contents-created', (event, contents) => {
+  contents.on('before-input-event', (inputEvent, input) => {
+    // Check of de gebruiker de linkermuisknop indrukt (mousedown)
+    if (input.type === 'mouseDown' && input.button === 'left') {
+      // Stuur een seintje naar je browser-schil
+      // Let op: vervang 'mainWindow' als jouw venster-variabele anders heet!
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('global-click-detected');
+      }
+    }
+  });
+});
+
+// ── Extension install from CWS ─────────
+// Listen for CRX download attempts and handle them
+ipcMain.handle('install-extension-from-id', async (_, extId) => {
+  // This allows installing by extension ID via the CWS
+  try {
+    const sess = session.fromPartition('persist:clearglass_session');
+    // Try loading from the extensions dir if already downloaded
+    const extPath = path.join(EXT_DIR, extId);
+    if (fs.existsSync(extPath)) {
+      await sess.loadExtension(extPath, { allowFileAccess: true });
+      return { success: true };
+    }
+    return { success: false, error: 'Extension folder not found. Please unpack the CRX into the extensions directory.' };
+  } catch(e) {
+    return { success: false, error: e.message };
+  }
 });
