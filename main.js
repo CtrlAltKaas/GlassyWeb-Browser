@@ -4,18 +4,19 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, screen, dialog } = require('electron');
 const path = require('path');
 const fs   = require('fs');
 
 let mainWindow;
 
 // ── Data persistence paths ─────────────
-const DATA_DIR  = path.join(app.getPath('userData'), 'clearglass');
-const HIST_FILE = path.join(DATA_DIR, 'history.json');
-const BM_FILE   = path.join(DATA_DIR, 'bookmarks.json');
-const SETS_FILE = path.join(DATA_DIR, 'settings.json');
-const DIALS_FILE= path.join(DATA_DIR, 'speeddials.json');
+const DATA_DIR   = path.join(app.getPath('userData'), 'clearglass');
+const HIST_FILE  = path.join(DATA_DIR, 'history.json');
+const BM_FILE    = path.join(DATA_DIR, 'bookmarks.json');
+const SETS_FILE  = path.join(DATA_DIR, 'settings.json');
+const DIALS_FILE = path.join(DATA_DIR, 'speeddials.json');
+const WINSTATE_FILE = path.join(DATA_DIR, 'winstate.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -27,13 +28,133 @@ function writeJSON(file, data) {
   try { fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8'); } catch (e) { console.error('writeJSON error', e); }
 }
 
+// ── Default settings (used by settings-get too) ─
+const DEFAULT_SETTINGS = {
+  homepage: 'newtab',
+  userAgent: '',
+  searchEngine: 'https://www.google.com/search?q=',
+  backgroundType: 'default',
+  backgroundUrl: '',
+  backgroundPath: '',
+  titleBarStyle: 'mac',   // 'mac' | 'windows'
+  onboarded: false,
+  lastSeenVersion: '',
+};
+
+// ══════════════════════════════════════
+// SINGLE INSTANCE LOCK + FILE OPEN ARGS
+// ══════════════════════════════════════
+// Files GlassyWeb knows how to open directly in a tab
+const OPENABLE_EXT = ['.html', '.htm', '.pdf', '.txt', '.svg', '.xml'];
+
+let pendingOpenPaths = [];   // queued until renderer says it's ready
+let rendererReady = false;
+
+function isOpenablePath(p) {
+  if (!p) return false;
+  const ext = path.extname(p).toLowerCase();
+  return OPENABLE_EXT.includes(ext) && fs.existsSync(p);
+}
+
+function toFileUrl(p) {
+  let resolved = path.resolve(p).replace(/\\/g, '/');
+  if (!resolved.startsWith('/')) resolved = '/' + resolved;
+  return 'file://' + encodeURI(resolved).replace(/#/g, '%23');
+}
+
+function openPathInBrowser(p) {
+  const url = toFileUrl(p);
+  if (rendererReady && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('open-url', url);
+    mainWindow.show();
+    mainWindow.focus();
+  } else {
+    pendingOpenPaths.push(url);
+  }
+}
+
+function extractFilePathsFromArgv(argv) {
+  // Skip the executable / '.' entry point and any flags, keep real openable paths
+  return argv.filter(a => !a.startsWith('-') && isOpenablePath(a));
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, argv) => {
+    const files = extractFilePathsFromArgv(argv);
+    files.forEach(openPathInBrowser);
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+// macOS: user double-clicked / "Open With" a file
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (app.isReady()) {
+    openPathInBrowser(filePath);
+  } else {
+    app.whenReady().then(() => openPathInBrowser(filePath));
+  }
+});
+
+// ══════════════════════════════════════
+// WINDOW STATE (position / size / maximized)
+// ══════════════════════════════════════
+const DEFAULT_WIN_BOUNDS = { width: 1400, height: 900, x: undefined, y: undefined };
+
+function getSavedWindowState() {
+  const saved = readJSON(WINSTATE_FILE, null);
+  if (!saved) return { bounds: DEFAULT_WIN_BOUNDS, maximized: false, fullscreen: false };
+
+  // Validate the saved bounds are still visible on a connected display,
+  // otherwise fall back to defaults (handles disconnected monitors).
+  const displays = screen.getAllDisplays();
+  const { x, y, width, height } = saved.bounds || {};
+  const fitsOnADisplay = typeof x === 'number' && typeof y === 'number' && displays.some(d => {
+    const a = d.workArea;
+    return x >= a.x - 50 && y >= a.y - 50 && x < a.x + a.width && y < a.y + a.height;
+  });
+
+  return {
+    bounds: fitsOnADisplay ? saved.bounds : { ...DEFAULT_WIN_BOUNDS, width: width || 1400, height: height || 900 },
+    maximized: !!saved.maximized,
+    fullscreen: !!saved.fullscreen,
+  };
+}
+
+let saveStateTimer = null;
+function scheduleSaveWindowState() {
+  clearTimeout(saveStateTimer);
+  saveStateTimer = setTimeout(saveWindowState, 400);
+}
+
+function saveWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const isMaximized  = mainWindow.isMaximized();
+  const isFullscreen = mainWindow.isFullScreen();
+  // Only persist bounds when in the "normal" state, so we don't save a maximized/full-screen size
+  const bounds = (!isMaximized && !isFullscreen) ? mainWindow.getBounds() : readJSON(WINSTATE_FILE, {}).bounds || DEFAULT_WIN_BOUNDS;
+  writeJSON(WINSTATE_FILE, { bounds, maximized: isMaximized, fullscreen: isFullscreen });
+}
+
 // ── Create Window ──────────────────────
 function createWindow() {
+  const savedState = getSavedWindowState();
+
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    width: savedState.bounds.width || 1400,
+    height: savedState.bounds.height || 900,
+    x: savedState.bounds.x,
+    y: savedState.bounds.y,
     minWidth: 900,
     minHeight: 600,
+    show: false, // shown once we've applied the saved maximize/fullscreen state, to avoid a flash
     frame: false,
     transparent: false,
     backgroundColor: '#0a0e1a',
@@ -55,6 +176,18 @@ function createWindow() {
   mainWindow.setTitle('GlassyWeb');
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'index.html'));
+
+  mainWindow.once('ready-to-show', () => {
+    if (savedState.fullscreen) mainWindow.setFullScreen(true);
+    else if (savedState.maximized) mainWindow.maximize();
+    mainWindow.show();
+  });
+
+  // Persist window position/size/state so it reopens the same way it was closed
+  ['resize', 'move', 'maximize', 'unmaximize', 'enter-full-screen', 'leave-full-screen'].forEach(evt => {
+    mainWindow.on(evt, scheduleSaveWindowState);
+  });
+  mainWindow.on('close', saveWindowState);
 
   // Send window title updates to renderer
   mainWindow.webContents.on('page-title-updated', (e, title) => {
@@ -134,6 +267,30 @@ async function loadExtensions() {
   }
 }
 
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  app.quit(); // Sluit dit tweede proces direct af
+} else {
+  // Als de app al openstond en er wordt elders op een nieuwe link geklikt:
+  app.on('second-instance', (event, commandLine) => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+      
+      // Zoek naar een HTTP/HTTPS link in de argumenten van de klik
+      const url = commandLine.find(arg => arg.startsWith('http://') || arg.startsWith('https://'));
+      if (url) {
+        mainWindow.webContents.send('open-url', url); 
+      }
+
+      // Check of er alsnog een lokaal bestand (.html/.pdf) werd meegegeven
+      const files = extractFilePathsFromArgv(commandLine.slice(app.isPackaged ? 1 : 2));
+      files.forEach(openPathInBrowser);
+    }
+  });
+}
+
 // ── App Startup ────────────────────────
 app.whenReady().then(async () => {
   // Bypass CSP for all sessions
@@ -153,7 +310,8 @@ app.whenReady().then(async () => {
   // Spoof Chrome UA for Chrome Web Store
   const cwsFilter = { urls: ['https://chromewebstore.google.com/*', 'https://clients2.google.com/*'] };
   const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-  
+  const gotTheLock = app.requestSingleInstanceLock();
+
   session.fromPartition('persist:clearglass_session').webRequest.onBeforeSendHeaders(cwsFilter, (details, cb) => {
     cb({ requestHeaders: { ...details.requestHeaders, 'User-Agent': chromeUA } });
   });
@@ -200,9 +358,23 @@ app.whenReady().then(async () => {
   await loadExtensions();
   createWindow();
 
+  // Windows/Linux: a file path may have been passed as a launch argument
+  // (e.g. double-clicking a .html/.pdf file that's associated with GlassyWeb)
+  const initialFiles = extractFilePathsFromArgv(process.argv.slice(app.isPackaged ? 1 : 2));
+  initialFiles.forEach(openPathInBrowser);
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+// Renderer tells us it's ready to receive queued "open this file" URLs
+ipcMain.on('renderer-ready', () => {
+  rendererReady = true;
+  if (pendingOpenPaths.length && mainWindow && !mainWindow.isDestroyed()) {
+    pendingOpenPaths.forEach(url => mainWindow.webContents.send('open-url', url));
+    pendingOpenPaths = [];
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -262,17 +434,86 @@ ipcMain.handle('speeddials-get', () => readJSON(DIALS_FILE, null));
 ipcMain.on('speeddials-set', (_, dials) => writeJSON(DIALS_FILE, dials));
 
 // ── Settings ───────────────────────────
-ipcMain.handle('settings-get', () => readJSON(SETS_FILE, {
-  homepage: 'newtab',
-  userAgent: '',
-  searchEngine: 'https://www.google.com/search?q=',
-  backgroundType: 'default',
-  backgroundUrl: '',
-  backgroundPath: '',
-}));
+ipcMain.handle('settings-get', () => ({ ...DEFAULT_SETTINGS, ...readJSON(SETS_FILE, {}) }));
 ipcMain.on('settings-set', (_, s) => {
   const cur = readJSON(SETS_FILE, {});
   writeJSON(SETS_FILE, { ...cur, ...s });
+});
+
+const { execSync } = require('child_process');
+
+// Voer dit uit zodra de app opstart
+if (app.isPackaged) {
+  try {
+    // 1. Registreer de protocollen in Electron zelf
+    app.setAsDefaultProtocolClient('http');
+    app.setAsDefaultProtocolClient('https');
+
+    // 2. Dwing de Windows-registersleutels af via PowerShell commando's
+    if (process.platform === 'win32') {
+      const appId = "GlassyWebHTM";
+      const exePath = process.execPath;
+
+      // Maak de ProgID aan en koppel de open-instructie
+      execSync(`powershell -Command "New-Item -Path 'HKCU:\\Software\\Classes\\${appId}' -Force | Out-Null"`);
+      execSync(`powershell -Command "New-ItemProperty -Path 'HKCU:\\Software\\Classes\\${appId}' -Name '(Default)' -Value 'GlassyWeb Document' -PropertyType String -Force | Out-Null"`);
+      execSync(`powershell -Command "New-Item -Path 'HKCU:\\Software\\Classes\\${appId}\\shell\\open\\command' -Force | Out-Null"`);
+      execSync(`powershell -Command "New-ItemProperty -Path 'HKCU:\\Software\\Classes\\${appId}\\shell\\open\\command' -Name '(Default)' -Value '\\"${exePath}\\" \\"%1\\"' -PropertyType String -Force | Out-Null"`);
+
+      // Koppel GlassyWeb aan de geregistreerde applicaties voor HTTP en HTTPS
+      const capabilitiesPath = `HKCU:\\Software\\Clients\\StartMenuInternet\\GlassyWeb.exe\\Capabilities`;
+      execSync(`powershell -Command "New-Item -Path '${capabilitiesPath}\\URLAssociations' -Force | Out-Null"`);
+      execSync(`powershell -Command "New-ItemProperty -Path '${capabilitiesPath}' -Name 'ApplicationName' -Value 'GlassyWeb' -PropertyType String -Force | Out-Null"`);
+      execSync(`powershell -Command "New-ItemProperty -Path '${capabilitiesPath}\\URLAssociations' -Name 'http' -Value '${appId}' -PropertyType String -Force | Out-Null"`);
+      execSync(`powershell -Command "New-ItemProperty -Path '${capabilitiesPath}\\URLAssociations' -Name 'https' -Value '${appId}' -PropertyType String -Force | Out-Null"`);
+      
+      // Meld de app definitief aan bij Windows
+      execSync(`powershell -Command "New-ItemProperty -Path 'HKCU:\\Software\\RegisteredApplications' -Name 'GlassyWeb' -Value 'Software\\Clients\\StartMenuInternet\\GlassyWeb.exe\\Capabilities' -PropertyType String -Force | Out-Null"`);
+    }
+  } catch (error) {
+    console.error("Register bijwerken mislukt:", error);
+  }
+} else {
+  if (process.platform === 'win32') {
+    app.setAsDefaultProtocolClient('http', process.execPath, [path.resolve(process.argv || '.')]);
+    app.setAsDefaultProtocolClient('https', process.execPath, [path.resolve(process.argv || '.')]);
+  }
+}
+
+// ── App version / What's New ────────────
+ipcMain.handle('get-app-version', () => app.getVersion());
+ipcMain.handle('get-last-seen-version', () => {
+  const s = readJSON(SETS_FILE, {});
+  return s.lastSeenVersion || '';
+});
+ipcMain.on('set-last-seen-version', (_, v) => {
+  const cur = readJSON(SETS_FILE, {});
+  writeJSON(SETS_FILE, { ...cur, lastSeenVersion: v });
+});
+
+// ── First-run onboarding flag ───────────
+ipcMain.handle('onboarding-get', () => {
+  const s = readJSON(SETS_FILE, {});
+  return !!s.onboarded;
+});
+ipcMain.on('onboarding-complete', () => {
+  const cur = readJSON(SETS_FILE, {});
+  writeJSON(SETS_FILE, { ...cur, onboarded: true });
+});
+
+// ── Open local file (Ctrl+O) ────────────
+ipcMain.handle('open-file-dialog', async () => {
+  if (!mainWindow) return [];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Open File',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Web / Document Files', extensions: ['html', 'htm', 'pdf', 'txt', 'svg', 'xml'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled) return [];
+  return result.filePaths.map(toFileUrl);
 });
 
 // ── Background image file handling ─────
