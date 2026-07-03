@@ -13,10 +13,16 @@
 
     <!-- Tab Bar + Window Controls -->
     <div class="tab-bar" id="tab-bar">
-      <div class="window-controls">
-        <button class="wc-btn wc-close"   id="btn-close"    title="Close"></button>
-        <button class="wc-btn wc-min"     id="btn-min"      title="Minimize"></button>
-        <button class="wc-btn wc-max"     id="btn-max"      title="Maximize"></button>
+      <div class="window-controls" id="window-controls">
+        <button class="wc-btn wc-close" id="btn-close" title="Close">
+          <svg class="wc-icon" width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="wc-btn wc-min" id="btn-min" title="Minimize">
+          <svg class="wc-icon" width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="wc-btn wc-max" id="btn-max" title="Maximize">
+          <svg class="wc-icon" width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        </button>
       </div>
 
       <div class="browser-logo" title="GlassyWeb">
@@ -272,6 +278,28 @@
       </div>
 
       <div class="settings-section">
+        <h3>Browser</h3>
+        <div class="setting-row">
+          <label>Default Browser</label>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="setting-info" id="default-browser-status">—</span>
+            <button class="glass-btn accent" id="btn-set-default-browser">Set as Default</button>
+          </div>
+        </div>
+        <div class="setting-row">
+          <label>Open a File</label>
+          <button class="glass-btn" id="btn-open-file">Open File… (Ctrl+O)</button>
+        </div>
+        <div class="setting-row" style="flex-direction:column; align-items:flex-start; gap:10px;">
+          <label>Window Controls Style</label>
+          <div class="bg-options">
+            <button class="bg-option" data-titlebar="mac">macOS</button>
+            <button class="bg-option" data-titlebar="windows">Windows</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
         <h3>Speed Dials</h3>
         <div class="setting-row">
           <label>Manage Speed Dials</label>
@@ -307,7 +335,11 @@
         <h3>About</h3>
         <div class="setting-row">
           <label>Browser</label>
-          <span class="setting-info">GlassyWeb v2.0.0</span>
+          <span class="setting-info" id="about-version">GlassyWeb</span>
+        </div>
+        <div class="setting-row">
+          <label>What's New</label>
+          <button class="glass-btn" id="btn-show-whatsnew">View Changelog</button>
         </div>
         <div class="setting-row">
           <label>Developer</label>
@@ -348,6 +380,99 @@
 
   <!-- Loading Bar -->
   <div class="loading-bar" id="loading-bar"></div>
+
+  <!-- ══════════════════════════════════
+       FIRST-RUN ONBOARDING
+  ══════════════════════════════════ -->
+  <div class="onboarding-overlay" id="onboarding-overlay">
+    <div class="onboarding-card">
+
+      <div class="onboarding-step" data-step="0">
+        <div class="onboarding-icon">👋</div>
+        <h2>Welcome to GlassyWeb</h2>
+        <p>Let's get a few things set up before you start browsing. This will only take a moment.</p>
+      </div>
+
+      <div class="onboarding-step" data-step="1" style="display:none;">
+        <h2>Pick your search engine</h2>
+        <p>You can always change this later in Settings.</p>
+        <div class="onboarding-options" id="ob-search-options">
+          <button class="onboarding-option active" data-value="https://www.google.com/search?q=">Google</button>
+          <button class="onboarding-option" data-value="https://www.bing.com/search?q=">Bing</button>
+          <button class="onboarding-option" data-value="https://duckduckgo.com/?q=">DuckDuckGo</button>
+          <button class="onboarding-option" data-value="https://search.brave.com/search?q=">Brave Search</button>
+          <button class="onboarding-option" data-value="https://ecosia.org/search?q=">Ecosia</button>
+        </div>
+      </div>
+
+      <div class="onboarding-step" data-step="2" style="display:none;">
+        <h2>Window controls style</h2>
+        <p>Choose the look for the close / minimize / maximize buttons.</p>
+        <div class="onboarding-options" id="ob-titlebar-options">
+          <button class="onboarding-option active" data-value="mac">macOS style</button>
+          <button class="onboarding-option" data-value="windows">Windows style</button>
+        </div>
+      </div>
+
+      <div class="onboarding-step" data-step="3" style="display:none;">
+        <h2>Make GlassyWeb your default browser?</h2>
+        <p>Open links from other apps directly in GlassyWeb. You can also do this later in Settings.</p>
+        <button class="glass-btn accent" id="ob-set-default-btn" style="margin-top:6px;">Set as Default Browser</button>
+        <div class="setting-info" id="ob-default-status" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="onboarding-step" data-step="4" style="display:none;">
+        <div class="onboarding-icon">🚀</div>
+        <h2>You're all set!</h2>
+        <p>Enjoy browsing with GlassyWeb. You can revisit any of these choices in Settings at any time.</p>
+      </div>
+
+      <div class="onboarding-progress" id="onboarding-progress"></div>
+
+      <div class="onboarding-actions">
+        <button class="glass-btn" id="ob-back-btn" style="visibility:hidden;">Back</button>
+        <button class="glass-btn accent" id="ob-next-btn">Next</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════
+       WHAT'S NEW
+  ══════════════════════════════════ -->
+  <div class="whatsnew-overlay" id="whatsnew-overlay">
+    <div class="whatsnew-card">
+      <button class="panel-close-btn" id="whatsnew-close">✕</button>
+      <div class="onboarding-icon">✨</div>
+      <h2>What's New in GlassyWeb <span id="whatsnew-version"></span></h2>
+      <div class="whatsnew-list" id="whatsnew-list">
+        <div class="whatsnew-item">
+          <strong>Set as default browser</strong>
+          <p>Open http/https links from anywhere directly in GlassyWeb.</p>
+        </div>
+        <div class="whatsnew-item">
+          <strong>Windows-style window controls</strong>
+          <p>Switch between macOS and Windows control buttons in Settings.</p>
+        </div>
+        <div class="whatsnew-item">
+          <strong>Smarter tabs</strong>
+          <p>Tabs now shrink to fit instead of overflowing when you have a lot open.</p>
+        </div>
+        <div class="whatsnew-item">
+          <strong>Open local files</strong>
+          <p>Open HTML and PDF files with Ctrl+O, by double-clicking them, or by dropping GlassyWeb on them as the default app.</p>
+        </div>
+        <div class="whatsnew-item">
+          <strong>Remembers your window</strong>
+          <p>GlassyWeb now reopens at the same size, position, and maximized state you left it in.</p>
+        </div>
+        <div class="whatsnew-item">
+          <strong>What's New page</strong>
+          <p>You're looking at it — see this after every update.</p>
+        </div>
+      </div>
+      <button class="glass-btn accent" id="whatsnew-got-it" style="margin-top:16px;">Got it</button>
+    </div>
+  </div>
 
   <script src="browser.js"></script>
 </body>
