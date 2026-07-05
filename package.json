@@ -1,6 +1,6 @@
 {
   "name": "GlassyWeb-Browser",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Your personal Glassy Browser",
   "main": "main.js",
   "scripts": {
