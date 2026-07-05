@@ -90,4 +90,23 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Tell main process the renderer is ready to receive queued "open file" URLs
   rendererReady: () => ipcRenderer.send('renderer-ready'),
+
+  // ── v1.2.2 additions ──────────────────
+  // RAM purge
+  ramPurge: () => ipcRenderer.invoke('ram-purge'),
+  onRamPurgeRequested: (cb) => ipcRenderer.on('ram-purge-requested', () => cb()),
+
+  // Fingerprint-protection preload script for guest <webview> pages
+  getWebviewPreloadPath: () => ipcRenderer.invoke('get-webview-preload-path'),
+
+  // Ad/tracker blocker toggle
+  adblockGet: () => ipcRenderer.invoke('adblock-get'),
+  adblockSet: (enabled) => ipcRenderer.send('adblock-set', enabled),
+
+  // Extension toolbar action click -> opens popup.html
+  extensionActionClick: (payload) => ipcRenderer.invoke('extension-action-click', payload),
+  onExtensionsUpdated: (cb) => ipcRenderer.on('extensions-updated', () => cb()),
+
+  // Reset everything (Settings > Danger Zone)
+  resetAll: () => ipcRenderer.invoke('reset-all'),
 });
