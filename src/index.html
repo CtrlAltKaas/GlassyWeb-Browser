@@ -85,8 +85,23 @@
         </button>
       </div>
 
+      <!-- Extension action icons (v1.2.2) -->
+      <div class="ext-toolbar" id="ext-toolbar"></div>
+
       <!-- Right: tool buttons -->
       <div class="nav-right nav-controls">
+        <button class="nav-btn" id="btn-pip" title="Picture-in-Picture">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+            <rect x="12" y="12" width="8" height="6" rx="1" fill="currentColor" opacity="0.85"/>
+          </svg>
+        </button>
+        <button class="nav-btn" id="btn-split-view" title="Split View">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.8"/>
+            <line x1="12" y1="4" x2="12" y2="20" stroke="currentColor" stroke-width="1.8"/>
+          </svg>
+        </button>
         <button class="nav-btn panel-trigger" id="btn-downloads-tray" title="Downloads" data-panel="downloads">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
@@ -109,6 +124,12 @@
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
             <path d="M9.5 3H5a2 2 0 0 0-2 2v4.5M14.5 3H19a2 2 0 0 1 2 2v4.5M21 14.5V19a2 2 0 0 1-2 2h-4.5M9.5 21H5a2 2 0 0 1-2-2v-4.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
             <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/>
+          </svg>
+        </button>
+        <button class="nav-btn panel-trigger" id="btn-privacy" title="Privacy" data-panel="privacy">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path d="M12 2l8 3v6c0 5-3.5 8.5-8 11-4.5-2.5-8-6-8-11V5z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+            <path d="M9 12l2 2 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </button>
         <button class="nav-btn" id="btn-devtools" title="Toggle DevTools">
@@ -208,6 +229,40 @@
     </div>
   </div>
 
+  <!-- Privacy Panel -->
+  <div class="side-panel" id="panel-privacy">
+    <div class="side-panel-header">
+      <h2>Privacy</h2>
+      <button class="panel-close-btn" data-panel="privacy">✕</button>
+    </div>
+    <div class="side-panel-body">
+      <p class="panel-info">
+        Quick controls for blocking, fingerprint protection, and dark mode.
+        Tab hibernation and other performance options live in Settings.
+      </p>
+      <div class="setting-row">
+        <label>Ad &amp; Tracker Blocker</label>
+        <input type="checkbox" class="gw-toggle" id="priv-adblock" checked />
+      </div>
+      <div class="setting-row">
+        <label>Fingerprinting Protection</label>
+        <input type="checkbox" class="gw-toggle" id="priv-fingerprint" checked />
+      </div>
+      <div class="setting-row">
+        <label>Force Dark Mode (all sites)</label>
+        <input type="checkbox" class="gw-toggle" id="priv-darkmode" />
+      </div>
+      <div class="setting-row">
+        <label>Clear Cache &amp; Cookies</label>
+        <button class="glass-btn danger" id="btn-priv-clear-cache">Clear Now</button>
+      </div>
+      <div class="setting-row">
+        <label>Clear All History</label>
+        <button class="glass-btn danger" id="btn-priv-clear-hist">Clear Now</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Settings Panel -->
   <div class="side-panel wide-panel" id="panel-settings">
     <div class="side-panel-header">
@@ -292,9 +347,23 @@
         </div>
         <div class="setting-row" style="flex-direction:column; align-items:flex-start; gap:10px;">
           <label>Window Controls Style</label>
-          <div class="bg-options">
-            <button class="bg-option" data-titlebar="mac">macOS</button>
-            <button class="bg-option" data-titlebar="windows">Windows</button>
+          <div class="bg-options titlebar-style-options">
+            <button class="bg-option titlebar-style-option" data-titlebar="mac">
+              <span class="titlebar-preview titlebar-preview-mac">
+                <span class="tp-dot tp-dot-close"></span>
+                <span class="tp-dot tp-dot-min"></span>
+                <span class="tp-dot tp-dot-max"></span>
+              </span>
+              macOS
+            </button>
+            <button class="bg-option titlebar-style-option" data-titlebar="windows">
+              <span class="titlebar-preview titlebar-preview-windows">
+                <span class="tp-rect"></span>
+                <span class="tp-rect"></span>
+                <span class="tp-rect tp-rect-close"></span>
+              </span>
+              Windows
+            </button>
           </div>
         </div>
       </div>
@@ -316,6 +385,30 @@
         <div class="setting-row">
           <label>Clear All History</label>
           <button class="glass-btn danger" id="btn-clear-hist-s">Clear Now</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Performance</h3>
+        <p class="panel-info" style="margin-top:-4px;">
+          Ad blocking, fingerprint protection, and dark mode moved to the
+          <strong>Privacy</strong> panel (shield icon in the toolbar).
+        </p>
+        <div class="setting-row">
+          <label>Vertical Tabs Sidebar</label>
+          <input type="checkbox" class="gw-toggle" id="set-vertical-tabs" />
+        </div>
+        <div class="setting-row">
+          <label>Zero-RAM Tab Hibernation</label>
+          <input type="checkbox" class="gw-toggle" id="set-hibernation" checked />
+        </div>
+        <div class="setting-row">
+          <label>Hibernate After (minutes)</label>
+          <input type="number" min="1" max="60" id="set-hibernation-minutes" class="setting-input" style="width:70px;" value="5" />
+        </div>
+        <div class="setting-row">
+          <label>Free Up Memory Now</label>
+          <button class="glass-btn" id="btn-ram-purge">Purge RAM (Ctrl+Alt+R)</button>
         </div>
       </div>
 
@@ -345,6 +438,19 @@
           <label>Developer</label>
           <span class="setting-info">CtrlAltKaasYT</span>
         </div>
+      </div>
+
+      <div class="settings-section danger-zone">
+        <h3>Danger Zone</h3>
+        <div class="setting-row">
+          <label>Reset GlassyWeb</label>
+          <button class="glass-btn danger" id="btn-reset-all">Reset Everything…</button>
+        </div>
+        <p class="panel-info">
+          Clears every setting back to default, resets onboarding and
+          "What's New" so they show again, and permanently deletes your
+          browsing history. Bookmarks and speed dials are kept.
+        </p>
       </div>
 
       <button class="glass-btn accent save-settings-btn" id="btn-save-settings">Save Settings</button>
@@ -446,28 +552,28 @@
       <h2>What's New in GlassyWeb <span id="whatsnew-version"></span></h2>
       <div class="whatsnew-list" id="whatsnew-list">
         <div class="whatsnew-item">
-          <strong>Set as default browser</strong>
-          <p>Open http/https links from anywhere directly in GlassyWeb.</p>
+          <strong>Zero-RAM tab hibernation</strong>
+          <p>Inactive tabs are fully destroyed and rebuilt on click, saving your scroll position — the memory is actually freed, not just hidden.</p>
         </div>
         <div class="whatsnew-item">
-          <strong>Windows-style window controls</strong>
-          <p>Switch between macOS and Windows control buttons in Settings.</p>
+          <strong>Ad &amp; tracker blocking + fingerprint protection</strong>
+          <p>Network-level blocking before requests even go out, plus canvas/WebGL/audio fingerprint noise. Toggle both in Settings.</p>
         </div>
         <div class="whatsnew-item">
-          <strong>Smarter tabs</strong>
-          <p>Tabs now shrink to fit instead of overflowing when you have a lot open.</p>
+          <strong>Split view</strong>
+          <p>Browse two tabs side by side in one window with the new split-view button.</p>
         </div>
         <div class="whatsnew-item">
-          <strong>Open local files</strong>
-          <p>Open HTML and PDF files with Ctrl+O, by double-clicking them, or by dropping GlassyWeb on them as the default app.</p>
+          <strong>Extension popups now work</strong>
+          <p>Extension icons next to the address bar open their real popup.html, like Chrome.</p>
         </div>
         <div class="whatsnew-item">
-          <strong>Remembers your window</strong>
-          <p>GlassyWeb now reopens at the same size, position, and maximized state you left it in.</p>
+          <strong>Universal dark mode &amp; Picture-in-Picture</strong>
+          <p>Force dark mode on any site, and pop any video into a floating window from the toolbar.</p>
         </div>
         <div class="whatsnew-item">
-          <strong>What's New page</strong>
-          <p>You're looking at it — see this after every update.</p>
+          <strong>Vertical tabs + RAM purge hotkey</strong>
+          <p>Optional sidebar tab layout, and Ctrl+Alt+R to instantly free memory.</p>
         </div>
       </div>
       <button class="glass-btn accent" id="whatsnew-got-it" style="margin-top:16px;">Got it</button>
