@@ -4,9 +4,43 @@
 
 'use strict';
 
-const { app, BrowserWindow, ipcMain, session, shell, screen, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, session, shell, screen, dialog, globalShortcut } = require('electron');
 const path = require('path');
 const fs   = require('fs');
+
+// ══════════════════════════════════════
+// PERFORMANCE / GPU / PRIVACY SWITCHES
+// Must be set before the app is ready.
+//
+// NOTE: --ignore-gpu-blocklist and --enable-native-gpu-memory-buffers
+// were removed — forcing GPU features past Chromium's hardware
+// blocklist is a known cause of a multi-second (sometimes 10-15s)
+// startup stall on machines where the GPU process crashes/restarts
+// while trying to honor them before falling back to software
+// rendering. The remaining switches are the safe, widely-supported
+// performance wins without that risk.
+// ══════════════════════════════════════
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-oop-rasterization');
+app.commandLine.appendSwitch('canvas-oop-rasterization');
+
+// Anti-Google telemetry / tracking switches
+app.commandLine.appendSwitch('disable-features', [
+  'PrivacySandboxSettings4',
+  'PrivacySandboxAdsAPIsOverride',
+  'InterestGroupStorage',
+  'AdInterestGroupAPI',
+  'Fledge',
+  'FledgeBiddingAndAuctionServer',
+  'TopicsAPI',
+  'AttributionReportingCrossAppWeb',
+].join(','));
+app.commandLine.appendSwitch('disable-domain-reliability');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('no-pings');
+app.commandLine.appendSwitch('metrics-recording-only');
+app.commandLine.appendSwitch('disable-client-side-phishing-detection');
 
 let mainWindow;
 
@@ -250,6 +284,49 @@ function createWindow() {
   session.fromPartition('incognito').on('will-download', handleDownload);
 }
 
+// ══════════════════════════════════════
+// AD & TRACKER BLOCKLIST
+// Network-level blocking — requests to these hosts (and their
+// subdomains) never leave the machine.
+// ══════════════════════════════════════
+const AD_TRACKER_HOSTS = [
+  'doubleclick.net', 'googlesyndication.com', 'googleadservices.com',
+  'google-analytics.com', 'googletagmanager.com', 'googletagservices.com',
+  'adnxs.com', 'adsafeprotected.com', 'adsrvr.org', 'adform.net',
+  'scorecardresearch.com', 'moatads.com', 'quantserve.com', 'quantcount.com',
+  'facebook.net', 'connect.facebook.net', 'fbcdn.net',
+  'analytics.twitter.com', 'ads-twitter.com',
+  'amazon-adsystem.com', 'criteo.com', 'criteo.net', 'taboola.com',
+  'outbrain.com', 'pubmatic.com', 'rubiconproject.com', 'openx.net',
+  'bidswitch.net', 'casalemedia.com', 'contextweb.com', 'yieldmo.com',
+  'mathtag.com', 'demdex.net', 'everesttech.net', 'bluekai.com',
+  'branch.io', 'appsflyer.com', 'mixpanel.com', 'segment.io', 'segment.com',
+  'hotjar.com', 'fullstory.com', 'crazyegg.com', 'newrelic.com',
+  'nr-data.net', 'sentry.io', 'clarity.ms', 'bing-shopping.com',
+  'adservice.google.com', 'pagead2.googlesyndication.com',
+  'ads.yahoo.com', 'analytics.yahoo.com',
+];
+let adBlockEnabled = true; // toggled from Settings
+
+function hostMatchesBlocklist(hostname) {
+  if (!hostname) return false;
+  return AD_TRACKER_HOSTS.some(h => hostname === h || hostname.endsWith('.' + h));
+}
+
+function installAdBlocker(sess) {
+  sess.webRequest.onBeforeRequest((details, callback) => {
+    if (!adBlockEnabled) { callback({ cancel: false }); return; }
+    try {
+      const hostname = new URL(details.url).hostname;
+      if (hostMatchesBlocklist(hostname)) {
+        callback({ cancel: true });
+        return;
+      }
+    } catch {}
+    callback({ cancel: false });
+  });
+}
+
 // ── Extensions ─────────────────────────
 const EXT_DIR = path.join(app.getPath('userData'), 'glassy', 'extensions');
 
@@ -258,13 +335,22 @@ async function loadExtensions() {
   const sess = session.fromPartition('persist:clearglass_session');
   let dirs;
   try { dirs = fs.readdirSync(EXT_DIR); } catch { return; }
-  for (const dir of dirs) {
+
+  // Load every extension in parallel instead of one at a time, and never
+  // block window creation on this — the window shows immediately and
+  // extension icons simply pop in a moment later once each one resolves.
+  await Promise.all(dirs.map(async (dir) => {
     const extPath = path.join(EXT_DIR, dir);
-    if (fs.statSync(extPath).isDirectory()) {
-      try { await sess.loadExtension(extPath, { allowFileAccess: true }); }
-      catch(e) { console.warn('[ext] failed to load', dir, e.message); }
+    try {
+      if (fs.statSync(extPath).isDirectory()) {
+        await sess.loadExtension(extPath, { allowFileAccess: true });
+      }
+    } catch (e) {
+      console.warn('[ext] failed to load', dir, e.message);
     }
-  }
+  }));
+
+  mainWindow?.webContents.send('extensions-updated');
 }
 
 const gotTheLock = app.requestSingleInstanceLock();
@@ -307,10 +393,14 @@ app.whenReady().then(async () => {
   bypassCSP(session.fromPartition('persist:clearglass_session'));
   bypassCSP(session.fromPartition('incognito'));
 
+  // Network-level ad/tracker blocking
+  installAdBlocker(session.fromPartition('persist:clearglass_session'));
+  installAdBlocker(session.fromPartition('incognito'));
+  installAdBlocker(session.defaultSession);
+
   // Spoof Chrome UA for Chrome Web Store
   const cwsFilter = { urls: ['https://chromewebstore.google.com/*', 'https://clients2.google.com/*'] };
   const chromeUA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-  const gotTheLock = app.requestSingleInstanceLock();
 
   session.fromPartition('persist:clearglass_session').webRequest.onBeforeSendHeaders(cwsFilter, (details, cb) => {
     cb({ requestHeaders: { ...details.requestHeaders, 'User-Agent': chromeUA } });
@@ -352,11 +442,23 @@ app.whenReady().then(async () => {
           }
         }
       });
+
+      // Aggressive background throttling — Chromium already throttles
+      // hidden renderers' timers/rAF to ~1Hz when this is on; we make sure
+      // it's explicitly enabled per-guest instead of relying on the default.
+      try { contents.setBackgroundThrottling(true); } catch {}
     }
   });
 
-  await loadExtensions();
   createWindow();
+  loadExtensions().catch(e => console.warn('[ext] load error', e));
+
+  // RAM Purge hotkey — must be registered after the app is ready
+  globalShortcut.register('Ctrl+Alt+R', () => {
+    const sess = session.fromPartition('persist:clearglass_session');
+    sess.clearCache().catch(() => {});
+    mainWindow?.webContents.send('ram-purge-requested');
+  });
 
   // Windows/Linux: a file path may have been passed as a launch argument
   // (e.g. double-clicking a .html/.pdf file that's associated with GlassyWeb)
@@ -475,11 +577,13 @@ if (app.isPackaged) {
   }
 } else {
   if (process.platform === 'win32') {
-    app.setAsDefaultProtocolClient('http', process.execPath, [path.resolve(process.argv || '.')]);
-    app.setAsDefaultProtocolClient('https', process.execPath, [path.resolve(process.argv || '.')]);
+    // We lossen het pad op naar de huidige map of de executable, als een string.
+    const pathArg = path.resolve(process.argv[1] || '.');
+    
+    app.setAsDefaultProtocolClient('http', process.execPath, [pathArg]);
+    app.setAsDefaultProtocolClient('https', process.execPath, [pathArg]);
   }
 }
-
 // ── App version / What's New ────────────
 ipcMain.handle('get-app-version', () => app.getVersion());
 ipcMain.handle('get-last-seen-version', () => {
@@ -583,12 +687,20 @@ ipcMain.on('open-devtools', (_, wcId) => {
 // ── Extensions IPC ─────────────────────
 ipcMain.handle('extensions-list', () => {
   const sess = session.fromPartition('persist:clearglass_session');
-  return (sess.getAllExtensions?.() || []).map(e => ({
-    id:          e.id,
-    name:        e.name,
-    version:     e.version,
-    description: e.manifest?.description || '',
-  }));
+  return (sess.getAllExtensions?.() || []).map(e => {
+    const manifest = e.manifest || {};
+    const icons = manifest.icons || {};
+    const iconPath = icons['32'] || icons['48'] || icons['16'] || Object.values(icons)[0] || null;
+    const hasPopup = !!(manifest.action?.default_popup || manifest.browser_action?.default_popup);
+    return {
+      id:          e.id,
+      name:        e.name,
+      version:     e.version,
+      description: manifest.description || '',
+      iconUrl:     iconPath ? `chrome-extension://${e.id}/${iconPath.replace(/^\//, '')}` : null,
+      hasPopup,
+    };
+  });
 });
 
 ipcMain.handle('extensions-open-dir', () => {
@@ -612,6 +724,103 @@ app.on('web-contents-created', (event, contents) => {
       }
     }
   });
+});
+
+// ── Reset Everything (Settings > Danger Zone) ─
+ipcMain.handle('reset-all', async () => {
+  try {
+    writeJSON(SETS_FILE, { ...DEFAULT_SETTINGS }); // also clears onboarded + lastSeenVersion, since those live in settings.json
+    writeJSON(HIST_FILE, []);
+    adBlockEnabled = true;
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ── Webview guest preload (fingerprint protection) ─
+ipcMain.handle('get-webview-preload-path', () => path.join(__dirname, 'src', 'webview-preload.js'));
+
+// ── Ad blocker toggle ──────────────────
+ipcMain.handle('adblock-get', () => adBlockEnabled);
+ipcMain.on('adblock-set', (_, enabled) => { adBlockEnabled = !!enabled; });
+
+// ── RAM Purge (Ctrl+Alt+R) ─────────────
+ipcMain.handle('ram-purge', async () => {
+  try {
+    const sess = session.fromPartition('persist:clearglass_session');
+    await sess.clearCache();
+    // Ask the renderer to hibernate every inactive tab — this is what actually
+    // frees the bulk of RAM, since it destroys the underlying webContents.
+    mainWindow?.webContents.send('ram-purge-requested');
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+app.on('will-quit', () => globalShortcut.unregisterAll());
+
+// ── Extension action popup ─────────────
+// Electron doesn't render extension toolbar icons itself; we do that in the
+// renderer and, on click, open the extension's declared popup here in a
+// small frameless window positioned under the icon — this is the piece that
+// was missing, so clicking an extension icon now actually opens its popup.html.
+let activeExtPopup = null;
+
+ipcMain.handle('extension-action-click', async (_, { extensionId, x, y, width, height }) => {
+  try {
+    if (activeExtPopup && !activeExtPopup.isDestroyed()) {
+      activeExtPopup.close();
+      activeExtPopup = null;
+      return { success: true, closed: true };
+    }
+
+    const sess = session.fromPartition('persist:clearglass_session');
+    const ext = (sess.getAllExtensions?.() || []).find(e => e.id === extensionId);
+    if (!ext) return { success: false, error: 'Extension not found' };
+
+    const manifest = ext.manifest || {};
+    const popupPath =
+      manifest.action?.default_popup ||
+      manifest.browser_action?.default_popup ||
+      null;
+
+    if (!popupPath) return { success: false, error: 'Extension has no popup' };
+
+    const winBounds = mainWindow.getBounds();
+    const popupX = Math.round(winBounds.x + (x || 0));
+    const popupY = Math.round(winBounds.y + (y || 0) + (height || 30));
+
+    activeExtPopup = new BrowserWindow({
+      width: 360,
+      height: 480,
+      x: popupX,
+      y: popupY,
+      frame: false,
+      resizable: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      show: false,
+      parent: mainWindow,
+      webPreferences: {
+        partition: 'persist:clearglass_session',
+        contextIsolation: true,
+        sandbox: false,
+      },
+    });
+
+    activeExtPopup.loadURL(`chrome-extension://${extensionId}/${popupPath.replace(/^\//, '')}`);
+    activeExtPopup.once('ready-to-show', () => activeExtPopup.show());
+    activeExtPopup.on('blur', () => {
+      if (activeExtPopup && !activeExtPopup.isDestroyed()) activeExtPopup.close();
+    });
+    activeExtPopup.on('closed', () => { activeExtPopup = null; });
+
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
 });
 
 // ── Extension install from CWS ─────────
