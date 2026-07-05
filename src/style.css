@@ -736,3 +736,127 @@ webview.active { display:flex; }
 }
 .whatsnew-item strong { display:block; font-size:13.5px; color:var(--text-primary); margin-bottom:3px; }
 .whatsnew-item p { font-size:12.5px; color:var(--text-secondary); line-height:1.5; margin:0; }
+
+/* ═══════════════════════════════════════
+   v1.2.2 ADDITIONS
+   Nothing above this line was modified —
+   these are new, opt-in rules only.
+   ═══════════════════════════════════════ */
+
+/* Extension toolbar icons next to the URL bar */
+.ext-toolbar {
+  display:flex; align-items:center; gap:4px;
+  flex-shrink:0; -webkit-app-region:no-drag;
+}
+.ext-toolbar-icon {
+  width:30px; height:30px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:15px; transition:background 0.15s, transform 0.1s;
+}
+.ext-toolbar-icon:hover { background:var(--glass-hover); transform:scale(1.06); }
+.ext-toolbar-icon img { width:18px; height:18px; border-radius:4px; object-fit:contain; }
+
+/* New nav buttons (PiP / Split View) reuse existing .nav-btn look;
+   just give them an active state to match .panel-trigger.active */
+#btn-split-view.active, #btn-pip.active {
+  background:rgba(255,255,255,0.16); color:var(--accent);
+}
+
+/* Simple checkbox toggle for Settings rows */
+.gw-toggle {
+  width:38px; height:22px; border-radius:22px;
+  background:rgba(255,255,255,0.14); border:1px solid var(--glass-border);
+  position:relative; appearance:none; cursor:pointer; flex-shrink:0;
+  transition:background 0.2s;
+}
+.gw-toggle::before {
+  content:''; position:absolute; top:2px; left:2px;
+  width:16px; height:16px; border-radius:50%;
+  background:var(--text-primary); transition:transform 0.2s;
+}
+.gw-toggle:checked { background:var(--success); }
+.gw-toggle:checked::before { transform:translateX(16px); }
+
+/* Hibernated tab indicator */
+.tab.tab-hibernated { opacity:0.5; }
+.tab.tab-hibernated .tab-title::after { content:' (sleeping)'; opacity:0.7; font-size:11px; }
+
+/* ── Split View: two webviews side by side inside .content-area ── */
+.content-area.split-mode webview.active.split-left {
+  width:calc(50% - 2px); left:0;
+}
+.content-area.split-mode webview.active.split-right {
+  width:calc(50% - 2px); left:calc(50% + 2px);
+  display:flex;
+}
+.content-area.split-mode::after {
+  content:''; position:absolute; top:0; bottom:0; left:50%;
+  width:1px; background:var(--glass-border); z-index:5; pointer-events:none;
+}
+
+/* ── Vertical Tabs Sidebar ──
+   Opt-in override of the shell's grid layout; only active with
+   body.vertical-tabs, so the default top-tabs layout is untouched. */
+body.vertical-tabs .browser-shell {
+  grid-template-columns:220px 1fr;
+  grid-template-rows:var(--nav-height) 1fr;
+  grid-template-areas:"tabs nav" "tabs content";
+}
+body.vertical-tabs .tab-bar {
+  flex-direction:column; align-items:stretch;
+  height:100%; padding:10px 8px; gap:6px;
+  overflow-y:auto;
+}
+body.vertical-tabs .tabs-container {
+  flex-direction:column; align-items:stretch; overflow-y:auto; overflow-x:hidden;
+}
+body.vertical-tabs .tab {
+  width:100% !important; flex:0 0 auto !important;
+}
+
+/* ── Split-view tab selection mode ── */
+.tabs-container.split-selecting .tab { cursor:pointer; }
+.tab.tab-split-picked {
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+  background:rgba(255,255,255,0.10);
+}
+.split-select-banner {
+  position:fixed; top:calc(var(--tab-height, 40px) + var(--nav-height, 48px) + 10px);
+  left:50%; transform:translateX(-50%) translateY(-8px);
+  background:rgba(20,20,24,0.92); color:#fff; border:1px solid var(--glass-border);
+  padding:8px 16px; border-radius:10px; font-size:13px; z-index:80;
+  opacity:0; pointer-events:none; transition:opacity 0.18s, transform 0.18s;
+  box-shadow:0 8px 24px rgba(0,0,0,0.35);
+}
+.split-select-banner.visible {
+  opacity:1; transform:translateX(-50%) translateY(0); pointer-events:auto;
+}
+
+/* ── Window-controls style previews (Settings) ── */
+.titlebar-style-options { display:flex; gap:12px; }
+.titlebar-style-option {
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  padding:12px 18px;
+}
+.titlebar-preview {
+  display:flex; align-items:center; gap:5px;
+  background:rgba(0,0,0,0.25); border-radius:6px; padding:6px 9px;
+}
+.titlebar-preview-windows { gap:0; }
+.tp-dot { width:10px; height:10px; border-radius:50%; display:inline-block; }
+.tp-dot-close { background:#ff5f57; }
+.tp-dot-min   { background:#febc2e; }
+.tp-dot-max   { background:#28c840; }
+.tp-rect {
+  width:20px; height:14px; display:inline-block;
+  background:rgba(255,255,255,0.15); margin-left:2px;
+}
+.tp-rect-close { background:#e81123; }
+
+/* ── Danger Zone ── */
+.settings-section.danger-zone {
+  border:1px solid rgba(255,80,80,0.35);
+  border-radius:10px; padding:14px;
+}
+.settings-section.danger-zone h3 { color:#ff7a7a; }
