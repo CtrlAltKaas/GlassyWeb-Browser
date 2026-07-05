@@ -17,7 +17,22 @@ let settings    = {
   backgroundType: 'default',
   backgroundUrl: '',
   backgroundPath: '',
+  // v1.2.2 additions
+  adBlockEnabled: true,
+  fingerprintProtection: true,
+  forceDarkMode: false,
+  verticalTabs: false,
+  hibernationEnabled: true,
+  hibernationMinutes: 5,
 };
+
+// ══════════════════════════════════════
+// v1.2.2 — NEW FEATURE STATE
+// ══════════════════════════════════════
+let webviewPreloadPath = null; // resolved once at startup, used for fingerprint protection
+let splitMode = false;
+let splitSecondaryTabId = null;
+const HIBERNATE_CHECK_INTERVAL_MS = 30 * 1000;
 
 // Default speed dials
 const DEFAULT_SPEED_DIALS = [
@@ -338,7 +353,9 @@ function createTab(url = null) {
   `;
 
   tabEl.addEventListener('click', e => {
-    if (!e.target.classList.contains('tab-close')) setActiveTab(id);
+    if (e.target.classList.contains('tab-close')) return;
+    if (splitSelecting) { handleSplitSelectionClick(id); return; }
+    setActiveTab(id);
   });
   tabEl.querySelector('.tab-close').addEventListener('click', e => {
     e.stopPropagation();
@@ -360,7 +377,10 @@ function createTab(url = null) {
     contentArea.appendChild(ntpEl);
   }
 
-  tabs.push({ id, tabEl, webview, ntpEl, errorEl, title: 'New Tab', favicon: '', url: url || '' });
+  tabs.push({
+    id, tabEl, webview, ntpEl, errorEl, title: 'New Tab', favicon: '', url: url || '',
+    lastActive: Date.now(), hibernated: false, scrollPos: { x: 0, y: 0 },
+  });
   setActiveTab(id);
   resizeTabs();
   return id;
@@ -401,8 +421,18 @@ window.addEventListener('resize', resizeTabs);
 function createWebview(url, tabId) {
   const wv = document.createElement('webview');
   wv.setAttribute('src', sanitizeUrl(url));
-  // plugins=yes turns on Chromium's built-in PDF viewer, so .pdf files/links render inline
-  wv.setAttribute('webpreferences', 'contextIsolation=yes,sandbox=no,plugins=yes');
+  // plugins=yes turns on Chromium's built-in PDF viewer, so .pdf files/links render inline.
+  // contextIsolation=no here applies ONLY to this guest page's own preload context
+  // (the app shell around it stays fully isolated, per main.js) — it's what lets
+  // webview-preload.js patch navigator/canvas/etc. in the page's real main world
+  // for fingerprint protection, before the page's own scripts run.
+  const guestIsolation = settings.fingerprintProtection ? 'contextIsolation=no' : 'contextIsolation=yes';
+  wv.setAttribute('webpreferences', `${guestIsolation},sandbox=no,plugins=yes`);
+  // Always attach the preload script — Dark Mode & Picture-in-Picture only
+  // touch the DOM (shared regardless of isolation), so they work whether or
+  // not Fingerprinting Protection is on. Only the deep prototype patches
+  // inside the script are gated on `guestIsolation` actually taking effect.
+  if (webviewPreloadPath) wv.setAttribute('preload', webviewPreloadPath);
   wv.setAttribute('partition', 'persist:clearglass_session');
   wv.dataset.tabId = tabId;
   contentArea.appendChild(wv);
@@ -413,13 +443,29 @@ function createWebview(url, tabId) {
 function setActiveTab(id) {
   activeTabId = id;
 
+  const clickedTab = getTab(id);
+  if (clickedTab?.hibernated) wakeTab(id);
+  touchTabActivity(id);
+
   tabs.forEach(t => {
     const isActive = t.id === id;
     t.tabEl.classList.toggle('active', isActive);
-    if (t.webview) t.webview.classList.toggle('active', isActive);
+    if (t.webview) {
+      t.webview.classList.toggle('active', isActive);
+      t.webview.classList.remove('split-left', 'split-right');
+    }
     if (t.ntpEl)   t.ntpEl.style.display  = isActive ? 'flex' : 'none';
     if (t.errorEl) t.errorEl.style.display = isActive ? 'flex' : 'none';
   });
+
+  // Split view: keep the secondary pane visible alongside the active tab
+  if (splitMode && splitSecondaryTabId && splitSecondaryTabId !== id) {
+    const primary = getTab(id);
+    const secondary = getTab(splitSecondaryTabId);
+    if (secondary?.hibernated) wakeTab(splitSecondaryTabId);
+    if (primary?.webview)   primary.webview.classList.add('active', 'split-left');
+    if (secondary?.webview) secondary.webview.classList.add('active', 'split-right');
+  }
 
   const tab = getTab(id);
   if (!tab) return;
@@ -454,6 +500,13 @@ function closeTab(id) {
     if (tab.errorEl) tab.errorEl.remove();
     tabs.splice(idx, 1);
 
+    if (splitSecondaryTabId === id) {
+      splitSecondaryTabId = null;
+      splitMode = false;
+      contentArea.classList.remove('split-mode');
+      updateSplitViewBtn();
+    }
+
     if (tabs.length === 0) {
       createTab();
     } else if (activeTabId === id) {
@@ -466,6 +519,256 @@ function closeTab(id) {
 function getTab(id) { return tabs.find(t => t.id === id); }
 
 // ══════════════════════════════════════
+// v1.2.2 — TAB HIBERNATION
+// Fully destroys the inactive tab's webview (and thus its whole
+// renderer process) to reclaim RAM, keeping only the URL + scroll
+// position so it can be rebuilt exactly where the user left it.
+// ══════════════════════════════════════
+function touchTabActivity(tabId) {
+  const t = getTab(tabId);
+  if (t) t.lastActive = Date.now();
+}
+
+async function hibernateTab(id) {
+  const tab = getTab(id);
+  if (!tab || !tab.webview || tab.hibernated || id === activeTabId) return;
+  if (splitMode && id === splitSecondaryTabId) return; // don't hibernate a pane that's visibly on screen
+
+  try {
+    const scroll = await tab.webview.executeJavaScript('({x: window.scrollX, y: window.scrollY})').catch(() => ({ x: 0, y: 0 }));
+    tab.scrollPos = scroll || { x: 0, y: 0 };
+  } catch {}
+
+  tab.webview.remove();
+  tab.webview = null;
+  tab.hibernated = true;
+  tab.tabEl.classList.add('tab-hibernated');
+}
+
+function wakeTab(id) {
+  const tab = getTab(id);
+  if (!tab || !tab.hibernated) return;
+  tab.webview = createWebview(tab.url, id);
+  tab.hibernated = false;
+  tab.tabEl.classList.remove('tab-hibernated');
+  tab.lastActive = Date.now();
+
+  const { x, y } = tab.scrollPos || { x: 0, y: 0 };
+  if (x || y) {
+    tab.webview.addEventListener('dom-ready', function onReady() {
+      tab.webview.removeEventListener('dom-ready', onReady);
+      setTimeout(() => tab.webview?.executeJavaScript(`window.scrollTo(${x}, ${y})`).catch(() => {}), 250);
+    });
+  }
+}
+
+function hibernateAllInactiveTabs() {
+  tabs.forEach(t => { if (t.id !== activeTabId) hibernateTab(t.id); });
+}
+
+setInterval(() => {
+  if (!settings.hibernationEnabled) return;
+  const thresholdMs = (settings.hibernationMinutes || 5) * 60 * 1000;
+  const now = Date.now();
+  tabs.forEach(t => {
+    if (t.id === activeTabId) return;
+    if (t.hibernated || !t.webview) return;
+    if (now - (t.lastActive || 0) > thresholdMs) hibernateTab(t.id);
+  });
+}, HIBERNATE_CHECK_INTERVAL_MS);
+
+// RAM purge hotkey (Ctrl+Alt+R) / Settings button — main process tells us when it fires
+window.electronAPI?.onRamPurgeRequested?.(() => {
+  hibernateAllInactiveTabs();
+  showToast('RAM purged — inactive tabs hibernated');
+});
+
+// Extensions finish loading in the background after startup — refresh the toolbar
+window.electronAPI?.onExtensionsUpdated?.(() => renderExtensionToolbar());
+
+// ══════════════════════════════════════
+// v1.2.2 — UNIVERSAL FORCED DARK MODE (smart)
+// Delegates to __glassyApplyDarkMode/__glassyRemoveDarkMode in
+// webview-preload.js, which checks the site's actual background
+// luminance first — already-dark sites are left alone instead of
+// getting inverted into a light theme.
+// ══════════════════════════════════════
+async function applyDarkModeToWebview(wv) {
+  if (!wv) return;
+  try { await wv.executeJavaScript('window.__glassyApplyDarkMode && window.__glassyApplyDarkMode()'); }
+  catch {}
+}
+async function removeDarkModeFromWebview(wv) {
+  if (!wv) return;
+  try { await wv.executeJavaScript('window.__glassyRemoveDarkMode && window.__glassyRemoveDarkMode()'); }
+  catch {}
+}
+function setForceDarkMode(enabled) {
+  settings.forceDarkMode = enabled;
+  window.electronAPI?.settingsSet({ forceDarkMode: enabled });
+  tabs.forEach(t => {
+    if (!t.webview) return;
+    enabled ? applyDarkModeToWebview(t.webview) : removeDarkModeFromWebview(t.webview);
+  });
+}
+
+// ══════════════════════════════════════
+// v1.2.2 — NATIVE SPLIT-SCREEN VIEW
+// Two webviews positioned side by side in the same window, built on
+// the existing <webview> architecture (this app doesn't use
+// WebContentsView, so this keeps the same model rather than a rewrite).
+//
+// Clicking the Split View button now enters a selection mode: the user
+// picks exactly two tabs (click to select, click again to deselect),
+// and split view activates once both are chosen. This replaces the old
+// "just auto-pair with whatever tab is next" behavior.
+// ══════════════════════════════════════
+let splitSelecting = false;
+let splitSelection = [];
+
+function updateSplitViewBtn() {
+  document.getElementById('btn-split-view')?.classList.toggle('active', splitMode || splitSelecting);
+}
+
+function toggleSplitView() {
+  if (splitSelecting) { cancelSplitSelection(); return; }
+
+  if (splitMode) {
+    splitMode = false;
+    splitSecondaryTabId = null;
+    contentArea.classList.remove('split-mode');
+    setActiveTab(activeTabId);
+    updateSplitViewBtn();
+    showToast('Split view off');
+    return;
+  }
+
+  if (tabs.length < 2) createTab();
+  startSplitSelection();
+}
+
+function startSplitSelection() {
+  splitSelecting = true;
+  splitSelection = [];
+  tabsContainer.classList.add('split-selecting');
+  updateSplitViewBtn();
+  showSplitSelectionBanner();
+}
+
+function cancelSplitSelection() {
+  splitSelecting = false;
+  splitSelection.forEach(id => getTab(id)?.tabEl.classList.remove('tab-split-picked'));
+  splitSelection = [];
+  tabsContainer.classList.remove('split-selecting');
+  updateSplitViewBtn();
+  hideSplitSelectionBanner();
+}
+
+function handleSplitSelectionClick(id) {
+  const tab = getTab(id);
+  if (!tab) return;
+
+  const already = splitSelection.indexOf(id);
+  if (already !== -1) {
+    splitSelection.splice(already, 1);
+    tab.tabEl.classList.remove('tab-split-picked');
+    showSplitSelectionBanner();
+    return;
+  }
+
+  if (splitSelection.length >= 2) return; // already have 2 picked — ignore extra clicks
+  splitSelection.push(id);
+  tab.tabEl.classList.add('tab-split-picked');
+
+  if (splitSelection.length === 2) {
+    const [leftId, rightId] = splitSelection;
+    splitSelecting = false;
+    splitSelection.forEach(sid => getTab(sid)?.tabEl.classList.remove('tab-split-picked'));
+    tabsContainer.classList.remove('split-selecting');
+    hideSplitSelectionBanner();
+
+    splitSecondaryTabId = rightId;
+    splitMode = true;
+    contentArea.classList.add('split-mode');
+    setActiveTab(leftId);
+    updateSplitViewBtn();
+    showToast('Split view on');
+  } else {
+    showSplitSelectionBanner();
+  }
+}
+
+function showSplitSelectionBanner() {
+  let el = document.getElementById('split-select-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'split-select-banner';
+    el.className = 'split-select-banner';
+    document.body.appendChild(el);
+  }
+  const remaining = 2 - splitSelection.length;
+  el.textContent = remaining > 0
+    ? `Select ${remaining} more tab${remaining > 1 ? 's' : ''} for split view (Esc to cancel)`
+    : 'Building split view…';
+  el.classList.add('visible');
+}
+
+function hideSplitSelectionBanner() {
+  document.getElementById('split-select-banner')?.classList.remove('visible');
+}
+
+// ══════════════════════════════════════
+// v1.2.2 — UNIVERSAL PICTURE-IN-PICTURE
+// ══════════════════════════════════════
+async function requestPiPForActiveTab() {
+  const tab = getTab(activeTabId);
+  if (!tab?.webview) { showToast('No page loaded'); return; }
+  try {
+    const result = await tab.webview.executeJavaScript(
+      'window.__glassyRequestPiP && window.__glassyRequestPiP()', true
+    );
+    if (!result) { showToast('Picture-in-Picture unavailable on this page'); return; }
+    if (!result.success) showToast(result.error || 'No video found on this page');
+  } catch (e) {
+    showToast('Picture-in-Picture failed on this page');
+  }
+}
+
+// ══════════════════════════════════════
+// v1.2.2 — EXTENSION TOOLBAR ICONS
+// Renders each installed extension's icon next to the URL bar; clicking
+// one opens the popup.html it declares, positioned under the icon.
+// ══════════════════════════════════════
+async function renderExtensionToolbar() {
+  const container = document.getElementById('ext-toolbar');
+  if (!container) return;
+  let exts = [];
+  try { exts = await window.electronAPI?.extensionsList() || []; } catch {}
+
+  container.innerHTML = '';
+  exts.forEach(ext => {
+    const btn = document.createElement('button');
+    btn.className = 'ext-toolbar-icon';
+    btn.title = ext.name;
+    btn.innerHTML = ext.iconUrl
+      ? `<img src="${escapeHtml(ext.iconUrl)}" alt="" width="18" height="18" />`
+      : '🧩';
+    btn.addEventListener('click', async () => {
+      if (!ext.hasPopup) { showToast(`${ext.name} has no popup`); return; }
+      const rect = btn.getBoundingClientRect();
+      await window.electronAPI?.extensionActionClick({
+        extensionId: ext.id,
+        x: rect.left,
+        y: rect.top,
+        width: rect.width,
+        height: rect.height,
+      });
+    });
+    container.appendChild(btn);
+  });
+}
+
+// ══════════════════════════════════════
 // WEBVIEW EVENTS
 // ══════════════════════════════════════
 function attachWebviewEvents(wv, tabId) {
@@ -473,7 +776,13 @@ function attachWebviewEvents(wv, tabId) {
   wv.addEventListener('dom-ready', () => {
     try { wv._wcId = wv.getWebContentsId(); }
     catch(e) { console.warn('[devtools] could not get wcId', e); }
+    if (settings.forceDarkMode) applyDarkModeToWebview(wv);
   });
+
+  // Any activity in the page counts as "active" for hibernation purposes
+  wv.addEventListener('did-start-loading', () => touchTabActivity(tabId));
+  wv.addEventListener('did-navigate', () => touchTabActivity(tabId));
+  wv.addEventListener('focus', () => touchTabActivity(tabId));
 
   wv.addEventListener('did-start-loading', () => {
     if (tabId === activeTabId) startLoading();
@@ -868,6 +1177,7 @@ function openPanel(name) {
   if (name === 'history')    renderHistory();
   if (name === 'bookmarks')  renderBookmarks();
   if (name === 'extensions') renderExtensions();
+  if (name === 'privacy')    loadPrivacyPanelUI();
   if (name === 'settings')   loadSettingsUI();
 }
 
@@ -1135,6 +1445,14 @@ async function loadSettingsUI() {
   // About / version
   const version = await window.electronAPI?.getAppVersion();
   if (version) document.getElementById('about-version').textContent = `GlassyWeb v${version}`;
+
+  // ── v1.2.2: Performance settings ──
+  const setVerticalTabs = document.getElementById('set-vertical-tabs');
+  const setHibernation = document.getElementById('set-hibernation');
+  const setHibernationMinutes = document.getElementById('set-hibernation-minutes');
+  if (setVerticalTabs) setVerticalTabs.checked = !!settings.verticalTabs;
+  if (setHibernation) setHibernation.checked = settings.hibernationEnabled !== false;
+  if (setHibernationMinutes) setHibernationMinutes.value = settings.hibernationMinutes || 5;
 }
 
 async function refreshDefaultBrowserStatus() {
@@ -1156,6 +1474,85 @@ document.querySelectorAll('#panel-settings [data-titlebar]').forEach(btn => {
     showToast(style === 'windows' ? 'Windows-style controls enabled' : 'macOS-style controls enabled');
   });
 });
+
+// ── v1.2.2: Privacy panel toggles ──
+document.getElementById('priv-adblock')?.addEventListener('change', (e) => {
+  settings.adBlockEnabled = e.target.checked;
+  window.electronAPI?.adblockSet(e.target.checked);
+  window.electronAPI?.settingsSet({ adBlockEnabled: e.target.checked });
+  showToast(e.target.checked ? 'Ad & tracker blocker on' : 'Ad & tracker blocker off');
+});
+
+document.getElementById('priv-fingerprint')?.addEventListener('change', (e) => {
+  settings.fingerprintProtection = e.target.checked;
+  window.electronAPI?.settingsSet({ fingerprintProtection: e.target.checked });
+  showToast('Applies to newly opened tabs');
+});
+
+document.getElementById('priv-darkmode')?.addEventListener('change', (e) => {
+  setForceDarkMode(e.target.checked);
+});
+
+document.getElementById('btn-priv-clear-cache')?.addEventListener('click', () => {
+  document.getElementById('btn-clear-cache')?.click();
+});
+document.getElementById('btn-priv-clear-hist')?.addEventListener('click', () => {
+  document.getElementById('btn-clear-hist-s')?.click();
+});
+
+function loadPrivacyPanelUI() {
+  const a = document.getElementById('priv-adblock');
+  const f = document.getElementById('priv-fingerprint');
+  const d = document.getElementById('priv-darkmode');
+  if (a) a.checked = settings.adBlockEnabled !== false;
+  if (f) f.checked = settings.fingerprintProtection !== false;
+  if (d) d.checked = !!settings.forceDarkMode;
+}
+
+// ── v1.2.2: Performance settings ──
+
+document.getElementById('set-vertical-tabs')?.addEventListener('change', (e) => {
+  settings.verticalTabs = e.target.checked;
+  window.electronAPI?.settingsSet({ verticalTabs: e.target.checked });
+  document.body.classList.toggle('vertical-tabs', e.target.checked);
+  resizeTabs();
+});
+
+document.getElementById('set-hibernation')?.addEventListener('change', (e) => {
+  settings.hibernationEnabled = e.target.checked;
+  window.electronAPI?.settingsSet({ hibernationEnabled: e.target.checked });
+});
+
+document.getElementById('set-hibernation-minutes')?.addEventListener('change', (e) => {
+  const mins = Math.max(1, parseInt(e.target.value, 10) || 5);
+  settings.hibernationMinutes = mins;
+  window.electronAPI?.settingsSet({ hibernationMinutes: mins });
+});
+
+document.getElementById('btn-ram-purge')?.addEventListener('click', async () => {
+  await window.electronAPI?.ramPurge();
+  hibernateAllInactiveTabs();
+  showToast('RAM purged');
+});
+
+document.getElementById('btn-reset-all')?.addEventListener('click', async () => {
+  const ok = window.confirm(
+    'Reset GlassyWeb?\n\nThis clears every setting back to default, resets onboarding ' +
+    'and "What\'s New" so they show again, and permanently deletes your browsing history. ' +
+    'Bookmarks and speed dials are kept. This cannot be undone.'
+  );
+  if (!ok) return;
+  const result = await window.electronAPI?.resetAll();
+  if (result?.success) {
+    showToast('Resetting GlassyWeb…');
+    setTimeout(() => window.location.reload(), 500);
+  } else {
+    showToast('Reset failed: ' + (result?.error || 'unknown error'));
+  }
+});
+
+document.getElementById('btn-split-view')?.addEventListener('click', toggleSplitView);
+document.getElementById('btn-pip')?.addEventListener('click', requestPiPForActiveTab);
 
 // Set as default browser
 document.getElementById('btn-set-default-browser')?.addEventListener('click', async () => {
@@ -1669,6 +2066,7 @@ document.querySelectorAll('webview').forEach(webview => {
 });
 
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCtxMenu(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && splitSelecting) cancelSplitSelection(); });
 
 // ══════════════════════════════════════
 // WEBVIEW CLICK INTERCEPTION (ZONDER PRELOAD.JS)
@@ -1862,6 +2260,18 @@ async function init() {
   if (settings.userAgent) {
     window.electronAPI?.setUserAgent(settings.userAgent);
   }
+
+  // ── v1.2.2 feature init ──────────────
+  try { webviewPreloadPath = await window.electronAPI?.getWebviewPreloadPath(); }
+  catch(e) { console.warn('Preload path fetch error:', e); }
+
+  try {
+    const adOn = await window.electronAPI?.adblockGet();
+    if (typeof adOn === 'boolean') settings.adBlockEnabled = adOn;
+  } catch {}
+
+  document.body.classList.toggle('vertical-tabs', !!settings.verticalTabs);
+  renderExtensionToolbar();
 
   // Open new tab page (homepage)
   createTab();
